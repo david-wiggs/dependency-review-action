@@ -182,6 +182,74 @@ export function addChangeVulnerabilitiesToSummary(
   }
 }
 
+/**
+ * Adds a section to the summary report that displays resolved vulnerabilities
+ * from dependencies that were removed in the PR
+ * 
+ * @param resolvedVulnerableChanges - The array of changes with resolved vulnerabilities
+ * @param severity - The minimum severity level being reported
+ */
+export function addResolvedVulnerabilitiesToSummary(
+  resolvedVulnerableChanges: Changes,
+  severity: string
+): void {
+  if (resolvedVulnerableChanges.length === 0) {
+    return
+  }
+
+  const rows: SummaryTableRow[] = []
+
+  const manifests = getManifestsSet(resolvedVulnerableChanges)
+
+  core.summary.addHeading('Resolved Vulnerabilities', 2)
+
+  for (const manifest of manifests) {
+    for (const change of resolvedVulnerableChanges.filter(
+      pkg => pkg.manifest === manifest
+    )) {
+      let previous_package = ''
+      let previous_version = ''
+      for (const vuln of change.vulnerabilities) {
+        const sameAsPrevious =
+          previous_package === change.name &&
+          previous_version === change.version
+
+        if (!sameAsPrevious) {
+          rows.push([
+            renderUrl(change.source_repository_url, change.name),
+            change.version,
+            renderUrl(vuln.advisory_url, vuln.advisory_summary),
+            vuln.severity
+          ])
+        } else {
+          rows.push([
+            {data: '', colspan: '2'},
+            renderUrl(vuln.advisory_url, vuln.advisory_summary),
+            vuln.severity
+          ])
+        }
+        previous_package = change.name
+        previous_version = change.version
+      }
+    }
+    core.summary.addHeading(`<em>${manifest}</em>`, 4).addTable([
+      [
+        {data: 'Name', header: true},
+        {data: 'Version', header: true},
+        {data: 'Vulnerability', header: true},
+        {data: 'Severity', header: true}
+      ],
+      ...rows
+    ])
+  }
+
+  if (severity !== 'low') {
+    core.summary.addQuote(
+      `Only included vulnerabilities with severity <strong>${severity}</strong> or higher.`
+    )
+  }
+}
+
 export function addLicensesToSummary(
   invalidLicenseChanges: InvalidLicenseChanges,
   config: ConfigurationOptions

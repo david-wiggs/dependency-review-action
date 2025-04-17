@@ -49,6 +49,54 @@ export function filterChangesBySeverity(
   )
 }
 
+/**
+ * Filters changes to find resolved vulnerabilities - dependencies that were removed and had vulnerabilities
+ *
+ * @param severity - The severity level to filter by.
+ * @param changes - The array of changes to filter.
+ * @returns The filtered array of changes that match the specified severity level and have vulnerabilities that are being resolved.
+ */
+export function filterResolvedVulnerabilities(
+  severity: Severity,
+  changes: Changes
+): Changes {
+  const severityIdx = SEVERITIES.indexOf(severity)
+  let filteredChanges = []
+  for (const change of changes) {
+    if (
+      change === undefined ||
+      change.vulnerabilities === undefined ||
+      change.vulnerabilities.length === 0
+    ) {
+      continue
+    }
+
+    const fChange = {
+      ...change,
+      vulnerabilities: change.vulnerabilities.filter(vuln => {
+        const vulnIdx = SEVERITIES.indexOf(vuln.severity)
+        if (vulnIdx <= severityIdx) {
+          return true
+        }
+      })
+    }
+    filteredChanges.push(fChange)
+  }
+
+  // don't want to deal with changes with no vulnerabilities
+  filteredChanges = filteredChanges.filter(
+    change => change.vulnerabilities.length > 0
+  )
+
+  // only report vulnerability removals
+  return filteredChanges.filter(
+    change =>
+      change.change_type === 'removed' &&
+      change.vulnerabilities !== undefined &&
+      change.vulnerabilities.length > 0
+  )
+}
+
 export function filterChangesByScopes(
   scopes: Scope[] | undefined,
   changes: Changes

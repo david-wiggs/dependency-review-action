@@ -83,6 +83,8 @@ outputs:
     description: All dependency changes (JSON)
   vulnerable-changes:
     description: Vulnerable dependency changes (JSON)
+  resolved-vulnerable-changes:
+    description: Resolved vulnerable dependency changes (JSON)
   invalid-license-changes:
     description: Invalid license dependency changes (JSON)
   denied-changes:

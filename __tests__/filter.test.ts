@@ -3,7 +3,8 @@ import {Change} from '../src/schemas'
 import {
   filterChangesBySeverity,
   filterChangesByScopes,
-  filterAllowedAdvisories
+  filterAllowedAdvisories,
+  filterResolvedVulnerabilities
 } from '../src/filter'
 
 const npmChange: Change = {
@@ -123,6 +124,69 @@ const lodashChange: Change = {
   ]
 }
 
+// Remove a vulnerable package - this should be identified as a resolved vulnerability
+const removedNpmChange: Change = {
+  manifest: 'package.json',
+  change_type: 'removed',
+  ecosystem: 'npm',
+  name: 'vulnerable-pkg',
+  version: '1.0.2',
+  package_url: 'pkg:npm/vulnerable-pkg@1.0.2',
+  license: 'MIT',
+  source_repository_url: 'github.com/some-repo',
+  scope: 'runtime',
+  vulnerabilities: [
+    {
+      severity: 'critical',
+      advisory_ghsa_id: 'resolved-ghsa-id',
+      advisory_summary: 'now resolved vulnerability',
+      advisory_url: 'github.com/advisories/resolved'
+    }
+  ]
+}
+
+// Remove a package without vulnerabilities - this should not be identified as a resolved vulnerability
+const removedSafePackage: Change = {
+  manifest: 'package.json',
+  change_type: 'removed',
+  ecosystem: 'npm',
+  name: 'safe-pkg',
+  version: '1.0.0',
+  package_url: 'pkg:npm/safe-pkg@1.0.0',
+  license: 'MIT',
+  source_repository_url: 'github.com/some-repo',
+  scope: 'runtime',
+  vulnerabilities: []
+}
+
+// Removed lodash with vulnerabilities
+const removedLodashChange: Change = {
+  change_type: 'removed',
+  manifest: 'package.json',
+  ecosystem: 'npm',
+  name: 'lodash',
+  version: '4.17.0',
+  package_url: 'pkg:npm/lodash@4.17.0',
+  license: 'MIT',
+  source_repository_url: 'https://github.com/lodash/lodash',
+  scope: 'runtime',
+  vulnerabilities: [
+    {
+      severity: 'high',
+      advisory_ghsa_id: 'GHSA-4xc9-xhrj-v574',
+      advisory_summary: 'Prototype Pollution in lodash',
+      advisory_url: 'https://github.com/advisories/GHSA-4xc9-xhrj-v574'
+    },
+    {
+      severity: 'moderate',
+      advisory_ghsa_id: 'GHSA-x5rq-j2xg-h7qm',
+      advisory_summary:
+        'Regular Expression Denial of Service (ReDoS) in lodash',
+      advisory_url: 'https://github.com/advisories/GHSA-x5rq-j2xg-h7qm'
+    }
+  ]
+}
+
 test('it properly filters changes by severity', async () => {
   const changes = [npmChange, rubyChange]
   let result = filterChangesBySeverity('high', changes)
@@ -214,4 +278,41 @@ test('it filters out GHSA dependencies', async () => {
   )
   expect(expected.length).toEqual(lodashChange.vulnerabilities.length - 1)
   expect(lodash.vulnerabilities).toEqual(expected)
+})
+
+test('it properly identifies resolved vulnerabilities', async () => {
+  const changes = [removedNpmChange, npmChange, removedSafePackage]
+  const result = filterResolvedVulnerabilities('low', changes)
+  expect(result).toEqual([removedNpmChange])
+})
+
+test('it filters resolved vulnerabilities by severity', async () => {
+  const changes = [removedNpmChange, removedLodashChange]
+  // Only high vulnerabilities - should only return lodash
+  const highResult = filterResolvedVulnerabilities('high', changes)
+  expect(highResult.length).toEqual(1)
+  expect(highResult[0].name).toEqual('lodash')
+  
+  // Low and above - should return both
+  const lowResult = filterResolvedVulnerabilities('low', changes)
+  expect(lowResult).toEqual([removedNpmChange, removedLodashChange])
+})
+
+test('it only includes removed dependencies with vulnerabilities', async () => {
+  const changes = [
+    removedNpmChange,    // removed with vulnerabilities
+    removedSafePackage,  // removed but no vulnerabilities
+    npmChange            // added with vulnerabilities (not resolved)
+  ]
+  const result = filterResolvedVulnerabilities('low', changes)
+  
+  // Should only include removedNpmChange
+  expect(result.length).toEqual(1)
+  expect(result[0].name).toEqual('vulnerable-pkg')
+  
+  // Ensure added packages are not included
+  expect(result.filter(change => change.change_type === 'added').length).toEqual(0)
+  
+  // Ensure packages without vulnerabilities are not included
+  expect(result.filter(change => change.vulnerabilities.length === 0).length).toEqual(0)
 })

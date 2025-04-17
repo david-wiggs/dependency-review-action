@@ -456,3 +456,107 @@ test('addLicensesToSummary() - includes configured denied license', () => {
   const text = core.summary.stringify()
   expect(text).toContain('<strong>Denied Licenses</strong>: MIT')
 })
+
+test('addResolvedVulnerabilitiesToSummary() - only includes section if any resolved vulnerabilities found', () => {
+  summary.addResolvedVulnerabilitiesToSummary(emptyChanges, 'low')
+  const text = core.summary.stringify()
+  expect(text).toEqual('')
+})
+
+test('addResolvedVulnerabilitiesToSummary() - includes all resolved vulnerabilities', () => {
+  const changes: Changes = [
+    createTestChange({
+      name: 'resolved-package',
+      change_type: 'removed',
+      vulnerabilities: [createTestVulnerability({advisory_summary: 'resolved vulnerability'})]
+    }),
+    createTestChange({
+      name: 'another-resolved',
+      change_type: 'removed',
+      package_url: 'test-url',
+      vulnerabilities: [createTestVulnerability({advisory_summary: 'another resolved vuln'})]
+    })
+  ]
+
+  summary.addResolvedVulnerabilitiesToSummary(changes, 'low')
+
+  const text = core.summary.stringify()
+  expect(text).toContain('<h2>Resolved Vulnerabilities</h2>')
+  expect(text).toContain('resolved-package')
+  expect(text).toContain('another-resolved')
+  expect(text).toContain('resolved vulnerability')
+  expect(text).toContain('another resolved vuln')
+})
+
+test('addResolvedVulnerabilitiesToSummary() - includes advisory url for resolved vulnerabilities if available', () => {
+  const changes: Changes = [
+    createTestChange({
+      name: 'resolved-package',
+      change_type: 'removed',
+      vulnerabilities: [
+        createTestVulnerability({
+          advisory_summary: 'resolved-summary',
+          advisory_url: 'resolved-url'
+        })
+      ]
+    })
+  ]
+
+  summary.addResolvedVulnerabilitiesToSummary(changes, 'low')
+
+  const text = core.summary.stringify()
+  expect(text).toContain('resolved-package')
+  expect(text).toContain('<a href="resolved-url">resolved-summary</a>')
+})
+
+test('addResolvedVulnerabilitiesToSummary() - groups multiple vulnerabilities of a single resolved package', () => {
+  const changes: Changes = [
+    createTestChange({
+      name: 'package-with-multiple-resolved-vulnerabilities',
+      change_type: 'removed',
+      vulnerabilities: [
+        createTestVulnerability({advisory_summary: 'resolved-summary-1'}),
+        createTestVulnerability({advisory_summary: 'resolved-summary-2'})
+      ]
+    })
+  ]
+
+  summary.addResolvedVulnerabilitiesToSummary(changes, 'low')
+
+  const text = core.summary.stringify()
+  expect(text.match('package-with-multiple-resolved-vulnerabilities')).toHaveLength(1)
+  expect(text).toContain('resolved-summary-1')
+  expect(text).toContain('resolved-summary-2')
+})
+
+test('addResolvedVulnerabilitiesToSummary() - prints severity statement if above low', () => {
+  const changes: Changes = [
+    createTestChange({
+      name: 'resolved-package',
+      change_type: 'removed',
+      vulnerabilities: [createTestVulnerability()]
+    })
+  ]
+
+  summary.addResolvedVulnerabilitiesToSummary(changes, 'high')
+
+  const text = core.summary.stringify()
+  expect(text).toContain(
+    'Only included vulnerabilities with severity <strong>high</strong> or higher.'
+  )
+})
+
+test('addResolvedVulnerabilitiesToSummary() - does not print severity statement if set to "low"', () => {
+  const changes: Changes = [
+    createTestChange({
+      name: 'resolved-package',
+      change_type: 'removed',
+      vulnerabilities: [createTestVulnerability()]
+    })
+  ]
+
+  summary.addResolvedVulnerabilitiesToSummary(changes, 'low')
+
+  const text = core.summary.stringify()
+  expect(text).not.toContain('Only included vulnerabilities')
+})

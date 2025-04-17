@@ -14,7 +14,8 @@ import {readConfig} from '../src/config'
 import {
   filterChangesBySeverity,
   filterChangesByScopes,
-  filterAllowedAdvisories
+  filterAllowedAdvisories,
+  filterResolvedVulnerabilities
 } from '../src/filter'
 import {getInvalidLicenseChanges} from './licenses'
 import {getScorecardLevels} from './scorecard'
@@ -107,6 +108,12 @@ async function run(): Promise<void> {
       filteredChanges
     )
 
+    // Identify resolved vulnerabilities (vulnerabilities that were removed in the PR)
+    const resolvedVulnerableChanges = filterResolvedVulnerabilities(
+      minSeverity,
+      filteredChanges
+    )
+
     const invalidLicenseChanges = await getInvalidLicenseChanges(
       filteredChanges,
       {
@@ -146,6 +153,16 @@ async function run(): Promise<void> {
     if (config.vulnerability_check) {
       core.setOutput('vulnerable-changes', JSON.stringify(vulnerableChanges))
       summary.addChangeVulnerabilitiesToSummary(vulnerableChanges, minSeverity)
+      
+      // Add resolved vulnerabilities to the summary and outputs
+      core.setOutput('resolved-vulnerable-changes', JSON.stringify(resolvedVulnerableChanges))
+      summary.addResolvedVulnerabilitiesToSummary(resolvedVulnerableChanges, minSeverity)
+      
+      // Print resolved vulnerabilities in the terminal output
+      if (resolvedVulnerableChanges.length > 0) {
+        await printResolvedVulnerabilitiesBlock(resolvedVulnerableChanges, minSeverity)
+      }
+      
       issueFound ||= await printVulnerabilitiesBlock(
         vulnerableChanges,
         minSeverity,
@@ -439,6 +456,43 @@ async function createScorecardWarnings(
       )
     }
   }
+}
+
+/**
+ * Prints a summary of resolved vulnerabilities (vulnerabilities that were removed in the PR)
+ * to the terminal output
+ * 
+ * @param resolvedChanges - The array of changes with resolved vulnerabilities
+ * @param minSeverity - The minimum severity level being reported
+ * @returns Promise that resolves to void
+ */
+async function printResolvedVulnerabilitiesBlock(
+  resolvedChanges: Changes,
+  minSeverity: Severity
+): Promise<void> {
+  return core.group('Resolved Vulnerabilities', async () => {
+    if (resolvedChanges.length === 0) {
+      core.info('No vulnerabilities were resolved in this PR.')
+      return
+    }
+
+    core.info('The following vulnerabilities were resolved in this PR:')
+    
+    for (const change of resolvedChanges) {
+      for (const vuln of change.vulnerabilities) {
+        core.info(
+          `${styles.bold.open}${change.manifest} » ${change.name}@${
+            change.version
+          }${styles.bold.close} – ${vuln.advisory_summary} ${renderSeverity(
+            vuln.severity
+          )}`
+        )
+        core.info(`  ↪ ${vuln.advisory_url}`)
+      }
+    }
+
+    core.info(`Dependency review found ${resolvedChanges.length} packages with resolved vulnerabilities.`)
+  })
 }
 
 run()
