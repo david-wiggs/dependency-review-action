@@ -664,6 +664,7 @@ const licenses_1 = __nccwpck_require__(87994);
 const scorecard_1 = __nccwpck_require__(42080);
 const summary = __importStar(__nccwpck_require__(83228));
 const git_refs_1 = __nccwpck_require__(35515);
+const resolved_vulnerabilities_1 = __nccwpck_require__(35585);
 const utils_1 = __nccwpck_require__(69277);
 const comment_pr_1 = __nccwpck_require__(61188);
 const deny_1 = __nccwpck_require__(23928);
@@ -758,6 +759,10 @@ function run() {
                 core.info('No Dependency Changes found. Skipping Dependency Review.');
                 return;
             }
+            // Extract resolved vulnerabilities from the full (unfiltered) change set.
+            // This intentionally runs before scope/advisory filtering so that all
+            // resolutions are reported regardless of fail_on_scopes or allow_ghsas.
+            const resolvedVulnerabilities = (0, resolved_vulnerabilities_1.getResolvedVulnerabilities)(changes);
             const scopedChanges = (0, filter_1.filterChangesByScopes)(config.fail_on_scopes, changes);
             const filteredChanges = (0, filter_1.filterAllowedAdvisories)(config.allow_ghsas, scopedChanges);
             const failOnSeverityParams = config.fail_on_severity;
@@ -782,11 +787,19 @@ function run() {
                 const scorecardChanges = getScorecardChanges(changes);
                 scorecard = yield (0, scorecard_1.getScorecardLevels)(scorecardChanges);
             }
-            const minSummary = summary.addSummaryToSummary(vulnerableChanges, invalidLicenseChanges, deniedChanges, scorecard, config);
+            const minSummary = summary.addSummaryToSummary(vulnerableChanges, invalidLicenseChanges, deniedChanges, scorecard, resolvedVulnerabilities, config);
             if (snapshot_warnings) {
                 summary.addSnapshotWarnings(config, snapshot_warnings);
             }
             let issueFound = false;
+            // Show resolved vulnerabilities first to give positive feedback
+            if (config.show_resolved_vulnerabilities) {
+                core.setOutput('resolved-vulnerabilities', JSON.stringify(resolvedVulnerabilities));
+                if (config.vulnerability_check && resolvedVulnerabilities.length > 0) {
+                    summary.addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities);
+                    printResolvedVulnerabilitiesBlock(resolvedVulnerabilities);
+                }
+            }
             if (config.vulnerability_check) {
                 core.setOutput('vulnerable-changes', JSON.stringify(vulnerableChanges));
                 yield summary.addChangeVulnerabilitiesToSummary(vulnerableChanges, minSeverity, config.show_patched_versions);
@@ -1025,6 +1038,18 @@ function createScorecardWarnings(scorecards, config) {
         }
     });
 }
+function printResolvedVulnerabilitiesBlock(resolvedVulnerabilities) {
+    return __awaiter(this, void 0, void 0, function* () {
+        return core.group('✅ Resolved Vulnerabilities', () => __awaiter(this, void 0, void 0, function* () {
+            core.info(`${ansi_styles_1.default.color.green.open}Great job! This PR resolves ${resolvedVulnerabilities.length} ${resolvedVulnerabilities.length === 1 ? 'vulnerability' : 'vulnerabilities'}:${ansi_styles_1.default.color.green.close}`);
+            for (const vuln of resolvedVulnerabilities) {
+                core.info(`${ansi_styles_1.default.color.green.open}✅ ${vuln.manifest} » ${vuln.package_name}@${vuln.package_version}${ansi_styles_1.default.color.green.close} – ${vuln.advisory_summary} ${renderSeverity(vuln.severity)}`);
+                core.info(`  ↪ ${vuln.advisory_url}`);
+            }
+            core.info(`${ansi_styles_1.default.color.green.open}Keep up the great work securing your dependencies! 🎉${ansi_styles_1.default.color.green.close}`);
+        }));
+    });
+}
 run();
 
 
@@ -1168,6 +1193,69 @@ function purlsMatch(a, b) {
 
 /***/ }),
 
+/***/ 35585:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getResolvedVulnerabilities = getResolvedVulnerabilities;
+/**
+ * Extract resolved vulnerabilities from removed dependencies.
+ * A vulnerability is considered "resolved" only if the advisory no longer
+ * appears on an added dependency with the same package name and ecosystem.
+ * This avoids false positives during upgrades where the old version is removed
+ * but the same advisory still affects the newly added version, while still
+ * correctly reporting resolutions when the same GHSA exists on an unrelated
+ * package.
+ *
+ * @param changes - All dependency changes (added and removed)
+ * @returns Array of resolved vulnerabilities
+ */
+function getResolvedVulnerabilities(changes) {
+    const resolvedVulns = [];
+    // Collect active advisories keyed by (package_name, ecosystem, advisory_ghsa_id)
+    // so that the same GHSA on an unrelated package doesn't suppress a resolution
+    const activeAdvisoryKeys = new Set();
+    for (const change of changes) {
+        if (change.change_type !== 'removed' && change.vulnerabilities) {
+            for (const vuln of change.vulnerabilities) {
+                activeAdvisoryKeys.add(`${change.name}|${change.ecosystem}|${vuln.advisory_ghsa_id}`);
+            }
+        }
+    }
+    // Filter for removed dependencies that have vulnerabilities
+    const removedChangesWithVulns = changes.filter(change => change.change_type === 'removed' &&
+        change.vulnerabilities &&
+        change.vulnerabilities.length > 0);
+    // Only include vulnerabilities whose advisory is NOT still present on the
+    // same package (by name + ecosystem) in an added/non-removed change
+    for (const removedChange of removedChangesWithVulns) {
+        for (const vulnerability of removedChange.vulnerabilities || []) {
+            const key = `${removedChange.name}|${removedChange.ecosystem}|${vulnerability.advisory_ghsa_id}`;
+            if (activeAdvisoryKeys.has(key)) {
+                continue;
+            }
+            const resolvedVuln = {
+                severity: vulnerability.severity,
+                advisory_ghsa_id: vulnerability.advisory_ghsa_id,
+                advisory_summary: vulnerability.advisory_summary,
+                advisory_url: vulnerability.advisory_url,
+                package_name: removedChange.name,
+                package_version: removedChange.version,
+                package_url: removedChange.package_url,
+                manifest: removedChange.manifest,
+                ecosystem: removedChange.ecosystem
+            };
+            resolvedVulns.push(resolvedVuln);
+        }
+    }
+    return resolvedVulns;
+}
+
+
+/***/ }),
+
 /***/ 93312:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -1207,7 +1295,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ScorecardSchema = exports.ScorecardApiSchema = exports.ComparisonResponseSchema = exports.ChangesSchema = exports.ConfigurationOptionsSchema = exports.MergeGroupSchema = exports.PullRequestSchema = exports.ChangeSchema = exports.SeveritySchema = exports.SCOPES = exports.SEVERITIES = void 0;
+exports.ScorecardSchema = exports.ScorecardApiSchema = exports.ComparisonResponseSchema = exports.ResolvedVulnerabilitiesSchema = exports.ResolvedVulnerabilitySchema = exports.ChangesSchema = exports.ConfigurationOptionsSchema = exports.MergeGroupSchema = exports.PullRequestSchema = exports.ChangeSchema = exports.SeveritySchema = exports.SCOPES = exports.SEVERITIES = void 0;
 const z = __importStar(__nccwpck_require__(34809));
 const purl_1 = __nccwpck_require__(87963);
 exports.SEVERITIES = ['critical', 'high', 'moderate', 'low'];
@@ -1315,6 +1403,7 @@ exports.ConfigurationOptionsSchema = z
     show_openssf_scorecard: z.boolean().optional().default(true),
     warn_on_openssf_scorecard_level: z.number().default(3),
     show_patched_versions: z.boolean().default(false),
+    show_resolved_vulnerabilities: z.boolean().default(false),
     comment_summary_in_pr: z
         .union([
         z.preprocess(val => (val === 'true' ? true : val === 'false' ? false : val), z.boolean()),
@@ -1354,6 +1443,19 @@ exports.ConfigurationOptionsSchema = z
     }
 });
 exports.ChangesSchema = z.array(exports.ChangeSchema);
+// Schema for resolved vulnerabilities - vulnerabilities that were present in base but no longer in head
+exports.ResolvedVulnerabilitySchema = z.object({
+    severity: exports.SeveritySchema,
+    advisory_ghsa_id: z.string(),
+    advisory_summary: z.string(),
+    advisory_url: z.string(),
+    package_name: z.string(),
+    package_version: z.string(),
+    package_url: z.string(),
+    manifest: z.string(),
+    ecosystem: z.string()
+});
+exports.ResolvedVulnerabilitiesSchema = z.array(exports.ResolvedVulnerabilitySchema);
 exports.ComparisonResponseSchema = z.object({
     changes: z.array(exports.ChangeSchema),
     snapshot_warnings: z.string()
@@ -1687,6 +1789,7 @@ exports.addScannedFiles = addScannedFiles;
 exports.addScorecardToSummary = addScorecardToSummary;
 exports.addSnapshotWarnings = addSnapshotWarnings;
 exports.addDeniedToSummary = addDeniedToSummary;
+exports.addResolvedVulnerabilitiesToSummary = addResolvedVulnerabilitiesToSummary;
 const core = __importStar(__nccwpck_require__(37484));
 const utils_1 = __nccwpck_require__(69277);
 const semver = __importStar(__nccwpck_require__(62088));
@@ -1792,7 +1895,7 @@ function extractPatchVersionId(patchData) {
 // generates the DR report summary and caches it to the Action's core.summary.
 // returns the DR summary string, ready to be posted as a PR comment if the
 // final DR report is too large
-function addSummaryToSummary(vulnerableChanges, invalidLicenseChanges, deniedChanges, scorecard, config) {
+function addSummaryToSummary(vulnerableChanges, invalidLicenseChanges, deniedChanges, scorecard, resolvedVulnerabilities, config) {
     if (config.deny_licenses && config.deny_licenses.length > 0) {
         addDenyListsDeprecationWarningToSummary();
     }
@@ -1810,46 +1913,84 @@ function addSummaryToSummary(vulnerableChanges, invalidLicenseChanges, deniedCha
             config.license_check ? 'license issues' : '',
             config.show_openssf_scorecard ? 'OpenSSF Scorecard issues' : ''
         ];
+        const activeIssueTypes = issueTypes.filter(Boolean);
         let msg = '';
-        if (issueTypes.filter(Boolean).length === 0) {
+        if (activeIssueTypes.length === 0) {
             msg = `${icons.check} No issues found.`;
         }
         else {
-            msg = `${icons.check} No ${issueTypes.filter(Boolean).join(' or ')} found.`;
+            msg = `${icons.check} No ${activeIssueTypes.join(' or ')} found.`;
         }
-        core.summary.addRaw(msg);
-        out.push(msg);
+        let msgHtml = msg;
+        let msgMarkdown = msg;
+        // Add extra positive message if vulnerabilities were resolved
+        if (config.show_resolved_vulnerabilities &&
+            config.vulnerability_check &&
+            resolvedVulnerabilities.length > 0) {
+            msgHtml += ` Additionally, this PR resolves <strong>${resolvedVulnerabilities.length}</strong> existing ${resolvedVulnerabilities.length === 1 ? 'vulnerability' : 'vulnerabilities'}! 🎉`;
+            msgMarkdown += ` Additionally, this PR resolves **${resolvedVulnerabilities.length}** existing ${resolvedVulnerabilities.length === 1 ? 'vulnerability' : 'vulnerabilities'}! 🎉`;
+        }
+        core.summary.addRaw(msgHtml);
+        out.push(msgMarkdown);
         return out.join('\n');
     }
     const foundIssuesHeader = 'The following issues were found:';
     core.summary.addRaw(foundIssuesHeader);
     out.push(foundIssuesHeader);
-    const summaryList = [
-        ...(config.vulnerability_check
-            ? [
-                `${checkOrFailIcon(vulnerableChanges.length)} ${vulnerableChanges.length} vulnerable package(s)`
-            ]
-            : []),
-        ...(config.license_check
-            ? [
-                `${checkOrFailIcon(invalidLicenseChanges.forbidden.length)} ${invalidLicenseChanges.forbidden.length} package(s) with incompatible licenses`,
-                `${checkOrFailIcon(invalidLicenseChanges.unresolved.length)} ${invalidLicenseChanges.unresolved.length} package(s) with invalid SPDX license definitions`,
-                `${checkOrWarnIcon(invalidLicenseChanges.unlicensed.length)} ${invalidLicenseChanges.unlicensed.length} package(s) with unknown licenses.`
-            ]
-            : []),
-        ...(deniedChanges.length > 0
-            ? [
-                `${checkOrWarnIcon(deniedChanges.length)} ${deniedChanges.length} package(s) denied.`
-            ]
-            : []),
-        ...(config.show_openssf_scorecard && scorecardWarnings > 0
-            ? [
-                `${checkOrWarnIcon(scorecardWarnings)} ${scorecardWarnings ? scorecardWarnings : 'No'} packages with OpenSSF Scorecard issues.`
-            ]
-            : [])
-    ];
-    core.summary.addList(summaryList);
-    for (const line of summaryList) {
+    // Build a single structured list of summary items, then render for each context.
+    // Items with a `count` get bold formatting (HTML <strong> / Markdown **);
+    // items without are rendered as plain text.
+    const summaryItems = [];
+    if (config.show_resolved_vulnerabilities &&
+        config.vulnerability_check &&
+        resolvedVulnerabilities.length > 0) {
+        const count = resolvedVulnerabilities.length;
+        summaryItems.push({
+            icon: icons.check,
+            text: `${count === 1 ? 'vulnerability' : 'vulnerabilities'} resolved 🎉`,
+            count
+        });
+    }
+    if (config.vulnerability_check) {
+        summaryItems.push({
+            icon: checkOrFailIcon(vulnerableChanges.length),
+            text: `${vulnerableChanges.length} vulnerable package(s)`
+        });
+    }
+    if (config.license_check) {
+        summaryItems.push({
+            icon: checkOrFailIcon(invalidLicenseChanges.forbidden.length),
+            text: `${invalidLicenseChanges.forbidden.length} package(s) with incompatible licenses`
+        }, {
+            icon: checkOrFailIcon(invalidLicenseChanges.unresolved.length),
+            text: `${invalidLicenseChanges.unresolved.length} package(s) with invalid SPDX license definitions`
+        }, {
+            icon: checkOrWarnIcon(invalidLicenseChanges.unlicensed.length),
+            text: `${invalidLicenseChanges.unlicensed.length} package(s) with unknown licenses.`
+        });
+    }
+    if (deniedChanges.length > 0) {
+        summaryItems.push({
+            icon: checkOrWarnIcon(deniedChanges.length),
+            text: `${deniedChanges.length} package(s) denied.`
+        });
+    }
+    if (config.show_openssf_scorecard && scorecardWarnings > 0) {
+        summaryItems.push({
+            icon: checkOrWarnIcon(scorecardWarnings),
+            text: `${scorecardWarnings ? scorecardWarnings : 'No'} packages with OpenSSF Scorecard issues.`
+        });
+    }
+    // Render for HTML (Action summary) — uses <strong> for count
+    const summaryListHtml = summaryItems.map(item => item.count !== undefined
+        ? `${item.icon} <strong>${item.count}</strong> ${item.text}`
+        : `${item.icon} ${item.text}`);
+    // Render for Markdown (PR comment) — uses **bold** for count
+    const summaryListMarkdown = summaryItems.map(item => item.count !== undefined
+        ? `${item.icon} **${item.count}** ${item.text}`
+        : `${item.icon} ${item.text}`);
+    core.summary.addList(summaryListHtml);
+    for (const line of summaryListMarkdown) {
         out.push(`* ${line}`);
     }
     core.summary.addRaw('See the Details below.');
@@ -2238,6 +2379,32 @@ function checkOrFailIcon(count) {
 }
 function checkOrWarnIcon(count) {
     return count === 0 ? icons.check : icons.warning;
+}
+function addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities) {
+    if (resolvedVulnerabilities.length === 0) {
+        return;
+    }
+    core.summary.addHeading('Resolved Vulnerabilities', 2);
+    core.summary.addRaw(`${icons.check} Great job! This PR resolves <strong>${resolvedVulnerabilities.length}</strong> ${resolvedVulnerabilities.length === 1 ? 'vulnerability' : 'vulnerabilities'}:`);
+    core.summary.addBreak();
+    const tableRows = [
+        [
+            { data: 'Package', header: true },
+            { data: 'Version', header: true },
+            { data: 'Vulnerability', header: true },
+            { data: 'Severity', header: true }
+        ]
+    ];
+    for (const vuln of resolvedVulnerabilities) {
+        tableRows.push([
+            `${vuln.manifest} » <strong>${vuln.package_name}</strong>`,
+            vuln.package_version,
+            (0, utils_1.renderUrl)(vuln.advisory_url, vuln.advisory_summary),
+            vuln.severity
+        ]);
+    }
+    core.summary.addTable(tableRows);
+    core.summary.addRaw('Keep up the great work securing your dependencies! 🎉');
 }
 
 
@@ -101368,6 +101535,7 @@ function readInlineConfig() {
     const show_openssf_scorecard = getOptionalBoolean('show-openssf-scorecard');
     const warn_on_openssf_scorecard_level = getOptionalNumber('warn-on-openssf-scorecard-level');
     const show_patched_versions = getOptionalBoolean('show-patched-versions');
+    const show_resolved_vulnerabilities = getOptionalBoolean('show-resolved-vulnerabilities');
     validateLicenses('allow-licenses', allow_licenses);
     validateLicenses('deny-licenses', deny_licenses);
     const keys = {
@@ -101389,7 +101557,8 @@ function readInlineConfig() {
         warn_only,
         show_openssf_scorecard,
         warn_on_openssf_scorecard_level,
-        show_patched_versions
+        show_patched_versions,
+        show_resolved_vulnerabilities
     };
     return Object.fromEntries(Object.entries(keys).filter(([_, value]) => value !== undefined));
 }
@@ -101772,7 +101941,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ScorecardSchema = exports.ScorecardApiSchema = exports.ComparisonResponseSchema = exports.ChangesSchema = exports.ConfigurationOptionsSchema = exports.MergeGroupSchema = exports.PullRequestSchema = exports.ChangeSchema = exports.SeveritySchema = exports.SCOPES = exports.SEVERITIES = void 0;
+exports.ScorecardSchema = exports.ScorecardApiSchema = exports.ComparisonResponseSchema = exports.ResolvedVulnerabilitiesSchema = exports.ResolvedVulnerabilitySchema = exports.ChangesSchema = exports.ConfigurationOptionsSchema = exports.MergeGroupSchema = exports.PullRequestSchema = exports.ChangeSchema = exports.SeveritySchema = exports.SCOPES = exports.SEVERITIES = void 0;
 const z = __importStar(__nccwpck_require__(34809));
 const purl_1 = __nccwpck_require__(52958);
 exports.SEVERITIES = ['critical', 'high', 'moderate', 'low'];
@@ -101880,6 +102049,7 @@ exports.ConfigurationOptionsSchema = z
     show_openssf_scorecard: z.boolean().optional().default(true),
     warn_on_openssf_scorecard_level: z.number().default(3),
     show_patched_versions: z.boolean().default(false),
+    show_resolved_vulnerabilities: z.boolean().default(false),
     comment_summary_in_pr: z
         .union([
         z.preprocess(val => (val === 'true' ? true : val === 'false' ? false : val), z.boolean()),
@@ -101919,6 +102089,19 @@ exports.ConfigurationOptionsSchema = z
     }
 });
 exports.ChangesSchema = z.array(exports.ChangeSchema);
+// Schema for resolved vulnerabilities - vulnerabilities that were present in base but no longer in head
+exports.ResolvedVulnerabilitySchema = z.object({
+    severity: exports.SeveritySchema,
+    advisory_ghsa_id: z.string(),
+    advisory_summary: z.string(),
+    advisory_url: z.string(),
+    package_name: z.string(),
+    package_version: z.string(),
+    package_url: z.string(),
+    manifest: z.string(),
+    ecosystem: z.string()
+});
+exports.ResolvedVulnerabilitiesSchema = z.array(exports.ResolvedVulnerabilitySchema);
 exports.ComparisonResponseSchema = z.object({
     changes: z.array(exports.ChangeSchema),
     snapshot_warnings: z.string()
