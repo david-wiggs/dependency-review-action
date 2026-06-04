@@ -796,7 +796,7 @@ function run() {
             if (config.show_resolved_vulnerabilities) {
                 core.setOutput('resolved-vulnerabilities', JSON.stringify(resolvedVulnerabilities));
                 if (config.vulnerability_check && resolvedVulnerabilities.length > 0) {
-                    summary.addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities);
+                    summary.addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities, vulnerableChanges);
                     printResolvedVulnerabilitiesBlock(resolvedVulnerabilities);
                 }
             }
@@ -2380,7 +2380,7 @@ function checkOrFailIcon(count) {
 function checkOrWarnIcon(count) {
     return count === 0 ? icons.check : icons.warning;
 }
-function addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities) {
+function addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities, vulnerableChanges = []) {
     if (resolvedVulnerabilities.length === 0) {
         return;
     }
@@ -2389,19 +2389,30 @@ function addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities) {
     core.summary.addHeading('Resolved Vulnerabilities', 2);
     core.summary.addRaw(`${icons.check} Great job! This PR resolves <strong>${vulnCount}</strong> ${vulnWord}:`);
     core.summary.addBreak();
+    // Build a set of packages that still have vulnerabilities in the updated version
+    const stillVulnerablePackages = new Set();
+    for (const change of vulnerableChanges) {
+        if (change.change_type === 'added' &&
+            change.vulnerabilities.length > 0) {
+            stillVulnerablePackages.add(`${change.name}|${change.ecosystem}`);
+        }
+    }
     // Group vulnerabilities by package (name + version + manifest)
     const grouped = new Map();
     for (const vuln of resolvedVulnerabilities) {
         const key = `${vuln.manifest}|${vuln.package_name}|${vuln.package_version}`;
-        if (!grouped.has(key)) {
-            grouped.set(key, {
+        let entry = grouped.get(key);
+        if (!entry) {
+            entry = {
                 manifest: vuln.manifest,
                 name: vuln.package_name,
                 version: vuln.package_version,
+                ecosystem: vuln.ecosystem,
                 vulns: []
-            });
+            };
+            grouped.set(key, entry);
         }
-        grouped.get(key).vulns.push(vuln);
+        entry.vulns.push(vuln);
     }
     const packageCount = grouped.size;
     const COLLAPSE_THRESHOLD = 4;
@@ -2424,17 +2435,27 @@ function addResolvedVulnerabilitiesToSummary(resolvedVulnerabilities) {
             ]);
         }
         core.summary.addTable(tableRows);
+        // Add per-package warnings for packages that still have vulnerabilities
+        for (const [, pkg] of grouped) {
+            if (stillVulnerablePackages.has(`${pkg.name}|${pkg.ecosystem}`)) {
+                core.summary.addRaw(`<blockquote>${icons.warning} <strong>${pkg.name}</strong> still has unresolved vulnerabilities in the updated version. Consider upgrading further.</blockquote>`, true);
+            }
+        }
     }
     else {
         // Many packages — group by package inside collapsible sections
         for (const [, pkg] of grouped) {
-            const label = `${pkg.manifest} » <strong>${pkg.name}</strong>@${pkg.version} — ${pkg.vulns.length} ${pkg.vulns.length === 1 ? 'vulnerability' : 'vulnerabilities'}`;
+            const hasRemaining = stillVulnerablePackages.has(`${pkg.name}|${pkg.ecosystem}`);
+            const label = `${pkg.manifest} » <strong>${pkg.name}</strong>@${pkg.version} — ${pkg.vulns.length} ${pkg.vulns.length === 1 ? 'vulnerability' : 'vulnerabilities'} resolved`;
             let tableHtml = '<table><tr><th>Vulnerability</th><th>Severity</th></tr>';
             for (const vuln of pkg.vulns) {
                 tableHtml += `<tr><td>${(0, utils_1.renderUrl)(vuln.advisory_url, vuln.advisory_summary)}</td><td>${vuln.severity}</td></tr>`;
             }
             tableHtml += '</table>';
-            core.summary.addRaw(`<details><summary>${icons.check} ${label}</summary>${tableHtml}</details>`, true);
+            if (hasRemaining) {
+                tableHtml += `<blockquote>${icons.warning} This package still has unresolved vulnerabilities in the updated version. Consider upgrading further.</blockquote>`;
+            }
+            core.summary.addRaw(`<details><summary>${label}</summary>${tableHtml}</details>`, true);
         }
     }
     core.summary.addRaw('Keep up the great work securing your dependencies! 🎉');
